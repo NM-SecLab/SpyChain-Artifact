@@ -1,0 +1,158 @@
+function TRIGGER_AppMain():
+    logPerformanceEntry()
+    startTime = getTime()
+    status = initializeApplication()
+    if status != SUCCESS:
+        setRunStatus(ERROR)
+
+    killSent = false
+
+    while applicationIsRunning():
+        logPerformanceExit()
+
+        // time-based behavior
+        now = getTime()
+        if !killSent and (now - startTime) ≥ 30s:
+            log("Sending kill command")
+            sendKillCommand()
+            killSent = true
+
+        // poll software bus (non-blocking)
+        status = receiveMessageNonBlocking()
+        logPerformanceEntry()
+
+        if status == SUCCESS:
+            processIncomingMessage()
+
+    disableComponent()
+    logPerformanceExit()
+    exitApplication()
+
+
+function initializeApplication():
+    setInitialState()
+    registerForEvents()
+    createCommandPipe()
+    subscribeToMessages(TRIGGER_CMD_MID,
+                        TRIGGER_REQ_HK_MID,
+                        SERVER_PING_RESP_MID,
+                        NOVATEL_OEM615_DEVICE_TLM_MID)
+    initializeTelemetryPackets()
+    resetCounters()
+    initializeHKDefaults()
+    sendStartupEvent()
+    return SUCCESS or FAILURE
+
+
+function processIncomingMessage():
+    msgId = getMessageId()
+    switch msgId:
+        case TRIGGER_CMD_MID:
+            processGroundCommand()
+        case TRIGGER_REQ_HK_MID:
+            processTelemetryRequest()
+        case SERVER_PING_RESP_MID:
+            handlePingResponse()
+        case NOVATEL_OEM615_DEVICE_TLM_MID:
+            handleGNSSTelemetry()
+        default:
+            incrementErrorCount()
+            logEvent("invalid command packet")
+
+
+function processGroundCommand():
+    cmdCode = getCommandCode()
+    switch cmdCode:
+        case NOOP: verifyLength(); incrementCommandCount(); logEvent("noop")
+        case RESET_COUNTERS: verifyLength(); resetCounters(); logEvent("reset")
+        case ENABLE: verifyLength(); enableDevice()
+        case DISABLE: verifyLength(); disableDevice()
+        case CONFIG: verifyLength(); sendConfigurationToDevice()
+        case PING_SERVER: verifyLength(); sendPingRequest()
+        case TOGGLE_EXFIL: verifyLength(); toggle = parseToggle(); sendToggleExfil(toggle)
+        case KILL_COMPONENT: verifyLength(); target = parseTarget(); logEvent("kill", target); setRunStatus(EXIT)
+        default: incrementErrorCount(); logEvent("invalid cmd code")
+
+
+function processTelemetryRequest():
+    cmdCode = getCommandCode()
+    switch cmdCode:
+        case REQUEST_HK: reportHousekeeping()
+        case REQUEST_DATA: reportDeviceTelemetry()
+        default: incrementErrorCount(); logEvent("invalid telemetry request")
+
+
+function reportHousekeeping():
+    if deviceEnabled():
+        status = requestDeviceHK()
+        updateCountsBy(status)
+    timestampAndPublish(HK)
+
+
+function reportDeviceTelemetry():
+    if deviceEnabled():
+        status = requestDeviceData()
+        if status == SUCCESS:
+            timestampAndPublish(DATA)
+        else:
+            incrementDeviceError()
+            logEvent("data request error")
+
+
+function resetCounters():
+    zero(commandErrors, commandCount, deviceErrors, deviceCount)
+
+
+function enableDevice():
+    if deviceDisabled():
+        configureUART()
+        status = uartOpen()
+        if status == SUCCESS:
+            markDeviceEnabled()
+            incrementDeviceCount()
+            logEvent("device enabled")
+        else:
+            incrementDeviceError()
+            logEvent("uart init error")
+    else:
+        incrementDeviceError()
+        logEvent("enable failed; already enabled")
+
+
+function disableDevice():
+    if deviceEnabled():
+        status = uartClose()
+        if status == SUCCESS:
+            markDeviceDisabled()
+            incrementDeviceCount()
+            logEvent("device disabled")
+        else:
+            incrementDeviceError()
+            logEvent("uart close error")
+    else:
+        incrementDeviceError()
+        logEvent("disable failed; already disabled")
+
+
+function sendToggleExfil(enable):
+    msg = buildToggleCmd(TRIGGER_TOGGLE_EXFIL_MID, enable)
+    transmitMsg(msg)
+    sendFifoCommand("toggle_exfil")
+
+
+function sendKillCommand():
+    // optionally publish kill MID
+    // optionally write "kill" to FIFO
+
+
+function sendFifoCommand(cmdString):
+    if fifoAvailable():
+        writeToFifo(cmdString)
+    else:
+        log("FIFO not ready")
+
+
+function handleGNSSTelemetry():
+    if firstGNSSPacketSeen() == false:
+        markGNSSSeen()
+        // optionally: sendToggleExfil(true)
