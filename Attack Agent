@@ -1,0 +1,111 @@
+function ATTACK_AppMain():
+    logPerformanceEntry()
+    status = initializeApplication()
+    if status != SUCCESS:
+        setRunStatus(ERROR)
+
+    while applicationIsRunning():
+        logPerformanceExit()
+
+        // covert trigger/exfil logic
+        readCommandsFromFIFO()
+        maybeStartOrContinueExfiltration()
+
+        // wait for next Software Bus message
+        status = receiveMessageBlocking()
+        logPerformanceEntry()
+
+        if status == SUCCESS:
+            processIncomingMessage()
+        else:
+            reportPipeError()
+            setRunStatus(ERROR)
+
+    disableComponent()
+    cleanupFIFO()
+    logPerformanceExit()
+    exitApplication()
+
+function initializeApplication():
+    setInitialState()
+    createOrFlushFIFO()
+    openFIFO()
+    registerForEvents()
+    createCommandPipe()
+    subscribeToMessages(CMD, HK, PING, KILL, systemTelemetry, etc.)
+    initializeTelemetryPackets()
+    resetCounters()
+    sendStartupEvent()
+    return SUCCESS or FAILURE
+
+function processIncomingMessage():
+    msgId = getMessageId()
+    switch msgId:
+        case ATTACK_CMD_MID:
+            processGroundCommand()
+        case ATTACK_REQ_HK_MID:
+            processTelemetryRequest()
+        case CLIENT_PING_ATTACK_REQ_MID:
+            handlePing()
+        case CLIENT_TOGGLE_EXFIL_MID:
+            handleToggleExfil()
+        case KILL_COMPONENT_MID:
+            handleKillCommand()
+        case systemTelemetry:
+            ignore()
+        default:
+            incrementErrorCount()
+
+function processGroundCommand():
+    cmdCode = getCommandCode()
+    switch cmdCode:
+        case NOOP: incrementCommandCount; sendEvent("noop")
+        case RESET_COUNTERS: resetCounters()
+        case ENABLE: enableDevice()
+        case DISABLE: disableDevice()
+        case HELLO_WORLD: sendHelloWorldUDP()
+        case SET_INT: setInternalValueAndSendToDevice()
+        case CONFIG: sendConfigurationToDevice()
+        default: incrementErrorCount()
+
+function processTelemetryRequest():
+    cmdCode = getCommandCode()
+    switch cmdCode:
+        case REQUEST_HK: publishHousekeepingTelemetry()
+        case REQUEST_DATA: publishDeviceTelemetry()
+        default: incrementErrorCount()
+
+function readCommandsFromFIFO():
+    if fifoHasData:
+        for each line in fifo:
+            if "toggle_exfil": setToggleFlag()
+            else if "kill": handleKillCommand()
+            else: logUnknownCommand()
+
+function maybeStartOrContinueExfiltration():
+    if toggleReceived and exfilNotActive:
+        markExfilActive()
+        recordStartTime()
+    else if exfilActive and timeElapsed >= 10s:
+        markPhase3() // long-term covert mode
+
+function handleToggleExfil():
+    enableDeviceIfDisabled()
+    forwardToggleCommandToDevice()
+
+function handleKillCommand():
+    crashApplication()  // simulate catastrophic shutdown
+
+function enableDevice():
+    openUART()
+    updateStatus()
+
+function disableDevice():
+    closeUART()
+    updateStatus()
+
+function forwardToRadio(data):
+    resolveRadioHost()
+    openUDPSocket()
+    sendDataToRadio()
+    closeSocket()
